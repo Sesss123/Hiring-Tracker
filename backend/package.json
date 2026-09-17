@@ -1,0 +1,22 @@
+{
+  "name": "hireline-backend",
+  "version": "1.0.0",
+  "description": "Real backend + MySQL database + secure login for HireLine (replaces the old localStorage-only, plaintext-password client-side app).",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "db:init": "node src/db/init.js",
+    "db:seed": "node src/db/seed.js",
+    "db:seed-demo": "node src/db/seed_demo.js",
+    "db:migrate-quality-score": "node src/db/migrate_quality_score.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.11.0"
+  }
+}
