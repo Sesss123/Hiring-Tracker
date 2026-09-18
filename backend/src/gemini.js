@@ -14,7 +14,7 @@
 // GEMINI_API_KEY must be set in backend/.env — this call only ever happens
 // server-side (never expose the key to the frontend).
 
-const MODEL = "gemini-2.0-flash";
+const MODEL = "gemini-3.5-flash";
 const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
 const RUBRIC_PROMPT = `You are scoring a candidate's CV for overall quality using a fixed rubric. This is NOT about whether the candidate fits the job's skills exactly — that is scored elsewhere. Score honestly based only on what is written in the CV text below.
@@ -64,21 +64,15 @@ function clampScores(raw) {
   return out;
 }
 
-// Throws on any failure (missing key, network error, bad response shape) —
-// the route calling this is responsible for turning that into a clean HTTP
-// error so a Gemini outage never corrupts applicant data or blocks the rest
-// of the app (this feature is HR-triggered and supplementary, not core path).
-async function scoreCVQuality(jobTitle, jobRequirements, resumeText) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error("GEMINI_API_KEY is not set in backend/.env — CV quality scoring is unavailable.");
-  }
-  if (!resumeText || !resumeText.trim()) {
-    throw new Error("This applicant has no CV text to score.");
-  }
+const RETRYABLE_STATUSES = new Set([429, 503]); // rate-limited / momentarily overloaded — worth a retry
+const MAX_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 1500; // base delay; doubles each attempt (1.5s, 3s)
 
-  const prompt = buildPrompt(jobTitle, jobRequirements, resumeText);
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
+async function callGemini(apiKey, prompt) {
   const response = await fetch(`${API_URL}?key=${apiKey}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -90,10 +84,43 @@ async function scoreCVQuality(jobTitle, jobRequirements, resumeText) {
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(`Gemini API error (${response.status}): ${body.slice(0, 300)}`);
+    const err = new Error(`Gemini API error (${response.status}): ${body.slice(0, 300)}`);
+    err.status = response.status;
+    throw err;
   }
 
-  const data = await response.json();
+  return response.json();
+}
+
+// Throws on any failure (missing key, network error, bad response shape) —
+// the route calling this is responsible for turning that into a clean HTTP
+// error so a Gemini outage never corrupts applicant data or blocks the rest
+// of the app (this feature is HR-triggered and supplementary, not core path).
+// Transient overload (429/503) is retried a couple of times with backoff
+// before giving up, since Gemini's "high demand" errors are usually
+// seconds-scale blips, not sustained outages — see QA notes.
+async function scoreCVQuality(jobTitle, jobRequirements, resumeText) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is not set in backend/.env — CV quality scoring is unavailable.");
+  }
+  if (!resumeText || !resumeText.trim()) {
+    throw new Error("This applicant has no CV text to score.");
+  }
+
+  const prompt = buildPrompt(jobTitle, jobRequirements, resumeText);
+
+  let data;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      data = await callGemini(apiKey, prompt);
+      break;
+    } catch (err) {
+      const isLastAttempt = attempt === MAX_ATTEMPTS;
+      if (!RETRYABLE_STATUSES.has(err.status) || isLastAttempt) throw err;
+      await sleep(RETRY_DELAY_MS * attempt);
+    }
+  }
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) throw new Error("Gemini returned an empty response.");
 
