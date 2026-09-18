@@ -18,6 +18,9 @@ const KEYS = {
 
 function uid(prefix) { return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
+// Points at the backend's /api root. Change this ONE line when deploying:
+// - Local development: http://localhost:4000/api
+// - Deployed (e.g. Railway): https://<your-backend>.up.railway.app/api
 const API_BASE = "http://localhost:4000/api";
 
 function authHeaders() {

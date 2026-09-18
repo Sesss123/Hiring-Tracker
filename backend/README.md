@@ -148,6 +148,77 @@ be running** (`npm start` in this folder) — opening `index.html` on its
 own is no longer enough, and every screen that talks to the API will show
 "Could not reach the HireLine server" until it is.
 
+## Deploying for free (campus project — no VPS needed)
+
+A VPS is overkill for a university project. This stack deploys entirely on
+free tiers: **Railway** (backend + MySQL, same platform) and **Netlify**
+(the static frontend). Total cost: $0.
+
+### 1. Railway — backend + MySQL
+
+1. Go to https://railway.app, sign up (GitHub login is easiest), and create
+   a **New Project**.
+2. **Add MySQL**: "New" → "Database" → "Add MySQL". Railway provisions it
+   and shows connection details (host, port, user, password, database name)
+   under its **Variables** tab — copy these, you'll need them next.
+3. **Add the backend**: "New" → "GitHub Repo" → pick this repo, and set the
+   **root directory** to `backend` (since the repo also has the frontend
+   files at the top level).
+4. On the backend service's **Variables** tab, add:
+   ```
+   DB_HOST=<from the MySQL service's variables>
+   DB_PORT=<from the MySQL service's variables>
+   DB_USER=<from the MySQL service's variables>
+   DB_PASSWORD=<from the MySQL service's variables>
+   DB_NAME=<from the MySQL service's variables>
+   JWT_SECRET=<a long random string — generate with the node command in .env.example>
+   GEMINI_API_KEY=<your Gemini key, if using CV Quality Check>
+   ```
+   Leave `PORT` unset — Railway injects its own `PORT` automatically and
+   `server.js` already reads `process.env.PORT`.
+5. Once it deploys, open the backend service's **Settings → Networking**
+   and click **Generate Domain** to get a public URL, e.g.
+   `https://hireline-backend-production.up.railway.app`.
+6. Run the one-time DB setup against this deployment. Railway's own
+   **Shell** tab (under the backend service) lets you run commands with the
+   same environment variables already loaded:
+   ```
+   npm run db:init
+   npm run db:seed
+   ```
+7. Confirm it's live: visit `https://<your-backend-domain>/api/health` in a
+   browser — it should return `{"ok":true}`.
+
+### 2. Point the frontend at the deployed backend
+
+In `app.js`, change the one line near the top:
+```js
+const API_BASE = "https://<your-backend-domain>/api";
+```
+(Replace `http://localhost:4000/api` with your actual Railway domain from
+step 5 above.)
+
+### 3. Netlify — frontend
+
+1. Go to https://netlify.com and sign up.
+2. **Add a new site** → **Deploy manually** (drag-and-drop), and drag in
+   the folder containing `index.html`, `app.js`, and `styles.css` (the
+   repo's top level — not the `backend/` folder).
+3. Netlify gives you a live URL immediately, e.g.
+   `https://hireline-altrium.netlify.app`. That's the link to share for
+   the project demo/submission.
+
+### Notes for a campus deployment
+
+- Railway and Netlify's free tiers can idle/sleep a deployed service after
+  a period of no traffic — the first request after idling may take a few
+  seconds to "wake up." This is normal and not a bug.
+- `GEMINI_API_KEY` is optional — if omitted, every other feature works
+  normally and only the CV Quality Check button will show an error when
+  clicked.
+- Never commit `.env` or paste a real API key into `.env.example` — see
+  the note at the top of `.env.example`.
+
 ## Project structure
 
 ```
