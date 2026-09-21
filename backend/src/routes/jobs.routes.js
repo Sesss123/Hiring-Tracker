@@ -12,12 +12,22 @@ function uid(prefix) {
 
 // GET /api/jobs  — public (Careers page lists open jobs, no login needed,
 // same as the old app where JobsList/Careers just read KEYS.jobs directly).
-// Pass ?all=1 (HR dashboard) to include closed jobs too.
+// Pass ?all=1 (HR dashboard) to include closed jobs too. Pass ?search= to
+// filter by title/department server-side (PB-03) — previously JobsTab
+// fetched every job and filtered with .filter() in the browser; that
+// client-side filtering still works and is left alone for instant
+// as-you-type feel, but a real search query now exists for anything that
+// needs to search without downloading the whole table first.
 router.get("/", asyncHandler(async (req, res) => {
-  const sql = req.query.all
-    ? "SELECT * FROM jobs ORDER BY created_at DESC"
-    : "SELECT * FROM jobs WHERE status = 'open' ORDER BY created_at DESC";
-  const [rows] = await pool.query(sql);
+  const conditions = [];
+  const params = {};
+  if (!req.query.all) conditions.push("status = 'open'");
+  if (req.query.search) {
+    conditions.push("(title LIKE :search OR department LIKE :search)");
+    params.search = `%${req.query.search}%`;
+  }
+  const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
+  const [rows] = await pool.query(`SELECT * FROM jobs ${where} ORDER BY created_at DESC`, params);
   res.json(toCamel(rows));
 }));
 

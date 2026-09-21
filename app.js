@@ -74,6 +74,7 @@ const api = {
   interviews: {
     list: () => apiFetch("/interviews"),
     schedule: (payload) => apiFetch("/interviews", { method: "POST", body: payload }),
+    assignInterviewer: (id, interviewerId) => apiFetch(`/interviews/${id}/interviewer`, { method: "PATCH", body: { interviewerId } }),
   },
   feedback: {
     list: () => apiFetch("/feedback"),
@@ -82,12 +83,18 @@ const api = {
   decisions: {
     list: () => apiFetch("/decisions"),
     make: (applicantId, payload) => apiFetch(`/decisions/applicants/${applicantId}`, { method: "POST", body: payload }),
+    undo: (applicantId) => apiFetch(`/decisions/applicants/${applicantId}`, { method: "DELETE" }),
   },
   messages: {
     send: (payload) => apiFetch("/messages", { method: "POST", body: payload }),
   },
   users: {
     list: (role) => apiFetch("/users" + (role ? "?role=" + role : "")),
+  },
+  notifications: {
+    list: () => apiFetch("/notifications"),
+    markRead: (id) => apiFetch(`/notifications/${id}/read`, { method: "PATCH" }),
+    markAllRead: () => apiFetch("/notifications/read-all", { method: "PATCH" }),
   },
 };
 
@@ -416,7 +423,7 @@ function Navbar({ user, onLogout, navigate, page }) {
                 <span className="nav-avatar">{user.name.trim().charAt(0).toUpperCase()}</span>
                 <span className="nav-user-text">
                   <span className="nav-user-name">{user.name}</span>
-                  <span className="role-tag">{user.role}</span>
+                  <span className="role-tag">{user.jobTitle || user.role}</span>
                 </span>
               </span>
               <button className="btn btn-outline btn-sm" onClick={onLogout}>Logout</button>
@@ -951,7 +958,7 @@ function Login({ navigate, onLogin }) {
 }
 
 function Register({ navigate, onLogin }) {
-  const [form, setForm] = useState({ name: "", email: "", password: "", role: "hr" });
+  const [form, setForm] = useState({ name: "", email: "", password: "", role: "hr", jobTitle: "" });
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -995,6 +1002,12 @@ function Register({ navigate, onLogin }) {
               <option value="manager">Hiring Manager</option>
             </select>
           </label>
+          {form.role === "manager" && (
+            <label>Job Title (optional)
+              <span className="hint">E.g. "Operations Manager" — a descriptive label only; access permissions are the same for every Hiring Manager account.</span>
+              <input value={form.jobTitle} onChange={(e) => update("jobTitle", e.target.value)} placeholder="Operations Manager" />
+            </label>
+          )}
           {error && <p className="error-text">{error}</p>}
           <button className="btn btn-primary btn-block" type="submit" disabled={submitting}>{submitting ? "Creating account…" : "Create Account"}</button>
         </form>
@@ -2019,15 +2032,18 @@ function ApplicantsTab() {
   }
 
   // Client-side guard preserved from the old submitSchedule() — the
-  // server also rejects a missing interviewer/date with a real 400 now
-  // (see backend/src/routes/interviews.routes.js), instead of the old
-  // silent `return;` that left HR with no idea anything went wrong.
+  // server also rejects a missing date with a real 400 now (see
+  // backend/src/routes/interviews.routes.js), instead of the old silent
+  // `return;` that left HR with no idea anything went wrong.
+  // interviewer_id is now optional here — Schedule Interview (PB-16) and
+  // Assign Interviewer (PB-17) are separate steps; picking an interviewer
+  // in this same form still works if HR wants to do both at once.
   async function submitSchedule(applicantId) {
-    if (!scheduleForm.interviewer_id || !scheduleForm.scheduled_at) return;
+    if (!scheduleForm.scheduled_at) return;
     try {
       await api.interviews.schedule({
         candidateId: applicantId,
-        interviewerId: scheduleForm.interviewer_id,
+        interviewerId: scheduleForm.interviewer_id || undefined,
         scheduledAt: scheduleForm.scheduled_at,
         notes: scheduleForm.notes,
       });
@@ -2119,7 +2135,7 @@ function ApplicantsTab() {
                   <tr><td colSpan={cvCompareJob ? "9" : "8"}>
                     <div className="inline-schedule">
                       <select value={scheduleForm.interviewer_id} onChange={(e) => setScheduleForm({ ...scheduleForm, interviewer_id: e.target.value })}>
-                        <option value="">Select interviewer</option>
+                        <option value="">Interviewer (optional — assign later)</option>
                         {interviewers.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
                       </select>
                       <input type="datetime-local" value={scheduleForm.scheduled_at} onChange={(e) => setScheduleForm({ ...scheduleForm, scheduled_at: e.target.value })} />
@@ -2293,22 +2309,46 @@ function InterviewsTab() {
   const [jobs, setJobs] = useState([]);
   const [users, setUsers] = useState([]);
   const [feedback, setFeedback] = useState([]);
+  const [assigningId, setAssigningId] = useState(null);
+  const [assignChoice, setAssignChoice] = useState("");
+  const [error, setError] = useState("");
 
+  async function refresh() {
+    const iv = await api.interviews.list();
+    setInterviews(iv);
+  }
   useEffect(() => {
-    api.interviews.list().then(setInterviews).catch(console.error);
+    refresh().catch(console.error);
     api.applicants.list().then(setCandidates).catch(console.error);
     api.jobs.list(true).then(setJobs).catch(console.error);
     api.users.list().then(setUsers).catch(console.error);
     api.feedback.list().then(setFeedback).catch(console.error);
   }, []);
 
+  const interviewers = users.filter((u) => u.role === "interviewer");
   function candidate(id) { return candidates.find((c) => c.id === id); }
   function jobTitle(candidateId) { const c = candidate(candidateId); const j = jobs.find((x) => x.id === (c && c.jobId)); return j ? j.title : "-"; }
   function interviewerName(id) { const u = users.find((x) => x.id === id); return u ? u.name : "-"; }
   function feedbackFor(interviewId) { return feedback.find((f) => f.interviewId === interviewId); }
 
+  // PB-17 (Assign Interviewer) as a real, separate step from PB-16
+  // (Schedule Interview) — used here for interviews scheduled without an
+  // interviewer picked yet.
+  async function confirmAssign(interviewId) {
+    if (!assignChoice) return;
+    try {
+      await api.interviews.assignInterviewer(interviewId, assignChoice);
+      setAssigningId(null);
+      setAssignChoice("");
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   return (
     <div className="table-wrap">
+      {error && <p className="error-text">{error}</p>}
       <table className="data-table">
         <thead><tr><th>Candidate</th><th>Job</th><th>Interviewer</th><th>Scheduled</th><th>Status</th><th>Feedback</th></tr></thead>
         <tbody>
@@ -2319,7 +2359,22 @@ function InterviewsTab() {
               <tr key={i.id}>
                 <td>{c ? c.name : "-"}</td>
                 <td>{jobTitle(i.candidateId)}</td>
-                <td>{interviewerName(i.interviewerId)}</td>
+                <td>
+                  {i.interviewerId ? interviewerName(i.interviewerId) : (
+                    assigningId === i.id ? (
+                      <span className="inline-assign">
+                        <select value={assignChoice} onChange={(e) => setAssignChoice(e.target.value)}>
+                          <option value="">Select interviewer</option>
+                          {interviewers.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                        </select>
+                        <button className="btn btn-primary btn-sm" onClick={() => confirmAssign(i.id)}>Confirm</button>
+                        <button className="btn btn-outline btn-sm" onClick={() => { setAssigningId(null); setAssignChoice(""); }}>Cancel</button>
+                      </span>
+                    ) : (
+                      <button className="btn btn-outline btn-sm" onClick={() => { setAssigningId(i.id); setAssignChoice(""); }}>Assign Interviewer</button>
+                    )
+                  )}
+                </td>
                 <td>{new Date(i.scheduledAt).toLocaleString()}</td>
                 <td><span className="badge">{i.status}</span></td>
                 <td>{f ? `${f.rating}/5  ${f.recommendation}` : "Pending"}</td>
@@ -2346,6 +2401,7 @@ function InterviewerDashboard({ user }) {
   const [candidates, setCandidates] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [feedbackAll, setFeedbackAll] = useState([]);
+  const [notifications, setNotifications] = useState([]);
 
   // GET /api/interviews already filters to this interviewer's own
   // assignments server-side when the logged-in role is "interviewer" (see
@@ -2360,7 +2416,19 @@ function InterviewerDashboard({ user }) {
   useEffect(() => {
     api.jobs.list(true).then(setJobs).catch((err) => setError(err.message));
     refresh().catch((err) => setError(err.message));
+    api.notifications.list().then(setNotifications).catch(() => {});
   }, []);
+
+  const unreadNotifications = notifications.filter((n) => !n.readAt);
+
+  async function dismissNotification(id) {
+    try {
+      await api.notifications.markRead(id);
+      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, readAt: new Date().toISOString() } : n)));
+    } catch (err) {
+      // Non-critical — leave the notification visible if this fails.
+    }
+  }
 
   function candidate(id) { return candidates.find((c) => c.id === id); }
   function job(jobId) { return jobs.find((j) => j.id === jobId); }
@@ -2387,6 +2455,13 @@ function InterviewerDashboard({ user }) {
       <h1 style={{ fontSize: "1.9rem" }}>Interviewer Dashboard</h1>
       <p>Your assigned interviews are listed below. Submit your feedback after each interview.</p>
       {error && <p className="error-text">{error}</p>}
+
+      {unreadNotifications.map((n) => (
+        <div className="notification-banner" key={n.id}>
+          <span>🔔 {n.message}</span>
+          <button className="btn btn-outline btn-sm" onClick={() => dismissNotification(n.id)}>Dismiss</button>
+        </div>
+      ))}
 
       {interviews.map((iv) => {
         const c = candidate(iv.candidateId);
@@ -2486,10 +2561,6 @@ function ReviewCandidates({ user }) {
     return (rated.reduce((sum, f) => sum + f.rating, 0) / rated.length).toFixed(1);
   }
 
-  // KNOWN GAP preserved unchanged from the original app (see
-  // backend/src/routes/decisions.routes.js): once a candidate is
-  // Hired/Rejected, this screen still has no way to reverse that decision
-  // — flagged, not fixed, since that's a scope call for the team.
   async function makeDecision(decision) {
     try {
       await api.decisions.make(detail.id, { decision, notes: decisionNotes });
@@ -2501,9 +2572,28 @@ function ReviewCandidates({ user }) {
     }
   }
 
+  // Reverses a Hired/Rejected decision — closes the known gap where a
+  // manager's mis-click was previously permanent. Restores the applicant
+  // to their prior pipeline stage (see backend/src/routes/decisions.routes.js
+  // for exactly how that prior stage is determined).
+  async function undoDecision() {
+    if (!window.confirm(`Undo the "${detail.status}" decision for ${detail.name}? This can't be redone automatically.`)) return;
+    try {
+      await api.decisions.undo(detail.id);
+      setDetailId(null);
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   return (
     <div>
       {error && <p className="error-text">{error}</p>}
+      <p className="muted-small" style={{ marginBottom: 12 }}>
+        Showing every applicant for review, not just the HR-shortlisted "Candidates" list — this screen and the database
+        both use "candidate" to mean any applicant being reviewed for a hiring decision.
+      </p>
       <label className="inline-filter">Filter by job:
         <select value={jobFilter} onChange={(e) => setJobFilter(e.target.value)}>
           <option value="">All jobs</option>
@@ -2557,7 +2647,7 @@ function ReviewCandidates({ user }) {
             );
           })}
 
-          {detail.status !== "Hired" && detail.status !== "Rejected" && (
+          {detail.status !== "Hired" && detail.status !== "Rejected" ? (
             <div className="decision-box">
               <h4>Make a Hiring Decision</h4>
               <textarea rows="2" placeholder="Decision notes (optional)" value={decisionNotes} onChange={(e) => setDecisionNotes(e.target.value)} />
@@ -2565,6 +2655,12 @@ function ReviewCandidates({ user }) {
                 <button className="btn btn-primary btn-sm" onClick={() => makeDecision("Hired")}>Hire Candidate</button>
                 <button className="btn btn-outline btn-sm" onClick={() => makeDecision("Rejected")}>Reject Candidate</button>
               </div>
+            </div>
+          ) : (
+            <div className="decision-box">
+              <h4>Decision: {detail.status}</h4>
+              <p className="muted-small">Made a mistake? You can undo this and return the candidate to their previous stage.</p>
+              <button className="btn btn-outline btn-sm" onClick={undoDecision}>Undo Decision</button>
             </div>
           )}
         </div>
@@ -2618,12 +2714,9 @@ function Reports() {
   const [interviews, setInterviews] = useState([]);
 
   // "candidates" here is really every Applicant, same as the original
-  // component (load(KEYS.applicants), not KEYS.candidates) — including
-  // the pre-existing "Total Candidates" mislabeling this project's own
-  // notes already flag (it counts all applicants, not the promoted
-  // shortlist). Preserved as-is: that's a separate, already-tracked
-  // reporting issue, not something this backend integration should
-  // silently change.
+  // component (load(KEYS.applicants), not KEYS.candidates) — the stat
+  // label below is "Total Applicants" to match, since this counts
+  // everyone who applied, not just the promoted shortlist.
   useEffect(() => {
     api.jobs.list(true).then(setJobs).catch(console.error);
     api.applicants.list().then(setCandidates).catch(console.error);
@@ -2644,12 +2737,50 @@ function Reports() {
     return { title: j.title, count: jc.length, avg };
   });
 
+  // Exports the same numbers already on screen as a CSV file — no backend
+  // call needed, since every stat here is already computed client-side
+  // from data the browser already fetched.
+  function exportCSV() {
+    const lines = [];
+    lines.push("HireLine Hiring Report");
+    lines.push(`Generated,${new Date().toLocaleString()}`);
+    lines.push("");
+    lines.push("Metric,Value");
+    lines.push(`Total Jobs,${totalJobs}`);
+    lines.push(`Open Jobs,${openJobs}`);
+    lines.push(`Total Applicants,${candidates.length}`);
+    lines.push(`Interviews Held,${interviews.length}`);
+    lines.push(`Hired,${hired}`);
+    lines.push(`Rejected,${rejected}`);
+    lines.push("");
+    lines.push("Candidates by Status");
+    lines.push("Status,Count");
+    Object.entries(byStatus).forEach(([status, count]) => lines.push(`${status},${count}`));
+    lines.push("");
+    lines.push("By Job Position");
+    lines.push("Job,Candidates,Avg AI Match Score");
+    byJob.forEach((j) => lines.push(`"${j.title}",${j.count},${j.avg}`));
+
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `hireline-report-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div>
+      <div className="reports-header">
+        <button className="btn btn-outline btn-sm" onClick={exportCSV}>⬇ Export to CSV</button>
+      </div>
       <div className="stat-grid">
         <div className="stat-card"><div className="stat-value">{totalJobs}</div><div className="stat-label">Total Jobs</div></div>
         <div className="stat-card"><div className="stat-value">{openJobs}</div><div className="stat-label">Open Jobs</div></div>
-        <div className="stat-card"><div className="stat-value">{candidates.length}</div><div className="stat-label">Total Candidates</div></div>
+        <div className="stat-card"><div className="stat-value">{candidates.length}</div><div className="stat-label">Total Applicants</div></div>
         <div className="stat-card"><div className="stat-value">{interviews.length}</div><div className="stat-label">Interviews Held</div></div>
         <div className="stat-card"><div className="stat-value">{hired}</div><div className="stat-label">Hired</div></div>
         <div className="stat-card"><div className="stat-value">{rejected}</div><div className="stat-label">Rejected</div></div>

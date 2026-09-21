@@ -23,7 +23,7 @@ function signToken(user) {
 // password >= 6 chars, role, reject duplicate email) except the password
 // is now bcrypt-hashed before it is ever stored.
 router.post("/register", asyncHandler(async (req, res) => {
-  const { name, email, password, role } = req.body || {};
+  const { name, email, password, role, jobTitle } = req.body || {};
   if (!name || !email || !password) {
     return res.status(400).json({ error: "Name, email and password are required." });
   }
@@ -40,14 +40,17 @@ router.post("/register", asyncHandler(async (req, res) => {
     return res.status(409).json({ error: "An account with that email already exists." });
   }
 
+  // jobTitle is a purely descriptive label (e.g. "Operations Manager" on a
+  // manager-role account) — it plays no part in access control, which is
+  // still driven entirely by role. See schema.sql's comment on this column.
   const password_hash = await bcrypt.hash(password, 10);
   const id = uid("user");
   await pool.query(
-    "INSERT INTO users (id, name, email, password_hash, role) VALUES (:id, :name, :email, :password_hash, :role)",
-    { id, name, email: normalizedEmail, password_hash, role }
+    "INSERT INTO users (id, name, email, password_hash, role, job_title) VALUES (:id, :name, :email, :password_hash, :role, :jobTitle)",
+    { id, name, email: normalizedEmail, password_hash, role, jobTitle: jobTitle || null }
   );
 
-  const user = { id, name, email: normalizedEmail, role };
+  const user = { id, name, email: normalizedEmail, role, jobTitle: jobTitle || null };
   res.status(201).json({ token: signToken(user), user });
 }));
 
@@ -75,7 +78,7 @@ router.post("/login", asyncHandler(async (req, res) => {
   const ok = await bcrypt.compare(password, dbUser.password_hash);
   if (!ok) return res.status(401).json({ error: "Incorrect email or password." });
 
-  const user = { id: dbUser.id, name: dbUser.name, email: dbUser.email, role: dbUser.role };
+  const user = { id: dbUser.id, name: dbUser.name, email: dbUser.email, role: dbUser.role, jobTitle: dbUser.job_title };
   res.json({ token: signToken(user), user });
 }));
 

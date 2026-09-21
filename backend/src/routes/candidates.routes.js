@@ -8,13 +8,21 @@ const router = express.Router();
 
 // GET /api/candidates — HR only (ManageCandidates / Candidate
 // Shortlisting). ?jobId= filters, ?sort=score_desc|score_asc matches the
-// old sortBy dropdown.
+// old sortBy dropdown, ?search= filters by name/email server-side (PB-11
+// — previously every candidate was downloaded and filtered client-side
+// with .filter(); that instant-as-you-type client filtering still works
+// and is left alone, but a real search query now exists too).
 router.get("/", requireAuth, requireRole("hr"), asyncHandler(async (req, res) => {
-  let sql = "SELECT * FROM candidates";
+  const conditions = [];
   const params = {};
-  if (req.query.jobId) { sql += " WHERE job_id = :jobId"; params.jobId = req.query.jobId; }
-  sql += req.query.sort === "score_asc" ? " ORDER BY match_score ASC" : " ORDER BY match_score DESC";
-  const [rows] = await pool.query(sql, params);
+  if (req.query.jobId) { conditions.push("job_id = :jobId"); params.jobId = req.query.jobId; }
+  if (req.query.search) {
+    conditions.push("(name LIKE :search OR email LIKE :search)");
+    params.search = `%${req.query.search}%`;
+  }
+  const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
+  const orderBy = req.query.sort === "score_asc" ? "ORDER BY match_score ASC" : "ORDER BY match_score DESC";
+  const [rows] = await pool.query(`SELECT * FROM candidates ${where} ${orderBy}`, params);
   res.json(toCamel(rows));
 }));
 

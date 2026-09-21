@@ -21,12 +21,6 @@ router.get("/", requireAuth, asyncHandler(async (req, res) => {
 
 // POST /api/decisions/applicants/:id — manager only (makeDecision() inside
 // ReviewCandidates, which only ManagerDashboard renders).
-//
-// KNOWN GAP carried over unchanged from the real app (flagged, not fixed,
-// since changing it would be a scope decision for the team, not a bug
-// fix): once an applicant is Hired or Rejected there is still no reversal
-// path here either — the same as the original ManagerDashboard, which
-// permanently hides the decision controls once status is Hired/Rejected.
 router.post("/applicants/:id", requireAuth, requireRole("manager"), asyncHandler(async (req, res) => {
   const { decision, notes } = req.body || {};
   if (!["Hired", "Rejected"].includes(decision)) {
@@ -57,6 +51,34 @@ router.get("/applicants/:id", requireAuth, asyncHandler(async (req, res) => {
   );
   if (!rows.length) return res.status(404).json({ error: "No decision recorded yet." });
   res.json(toCamel(rows[0]));
+}));
+
+// DELETE /api/decisions/applicants/:id — manager only. Reverses a
+// Hired/Rejected decision: removes the decision record and restores the
+// applicant's status to what it was before the decision (interviewed if
+// any interview took place, otherwise back to their last shortlist/apply
+// stage). Added to close a known gap: previously a decision was
+// permanent, so a manager's mis-click had no way back short of editing
+// the database directly.
+router.delete("/applicants/:id", requireAuth, requireRole("manager"), asyncHandler(async (req, res) => {
+  const [appRows] = await pool.query("SELECT id, status FROM applicants WHERE id = :id", { id: req.params.id });
+  if (!appRows.length) return res.status(404).json({ error: "Candidate (applicant) not found." });
+  if (!["Hired", "Rejected"].includes(appRows[0].status)) {
+    return res.status(409).json({ error: "This candidate has no active decision to undo." });
+  }
+
+  const [interviewRows] = await pool.query(
+    "SELECT id FROM interviews WHERE candidate_id = :id LIMIT 1", { id: req.params.id }
+  );
+  const [candidateRows] = await pool.query(
+    "SELECT id FROM candidates WHERE applicant_id = :id LIMIT 1", { id: req.params.id }
+  );
+  const restoredStatus = interviewRows.length ? "Interviewed" : candidateRows.length ? "Shortlisted" : "Applied";
+
+  await pool.query("DELETE FROM decisions WHERE candidate_id = :id", { id: req.params.id });
+  await pool.query("UPDATE applicants SET status = :status WHERE id = :id", { id: req.params.id, status: restoredStatus });
+
+  res.json({ restoredStatus });
 }));
 
 module.exports = router;

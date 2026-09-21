@@ -9,7 +9,10 @@
     "db:init": "node src/db/init.js",
     "db:seed": "node src/db/seed.js",
     "db:seed-demo": "node src/db/seed_demo.js",
-    "db:migrate-quality-score": "node src/db/migrate_quality_score.js"
+    "db:migrate-quality-score": "node src/db/migrate_quality_score.js",
+    "db:migrate-notifications": "node src/db/migrate_notifications.js",
+    "db:migrate-optional-interviewer": "node src/db/migrate_optional_interviewer.js",
+    "db:migrate-job-title": "node src/db/migrate_job_title.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
