@@ -1,5 +1,50 @@
 const { useState, useEffect, useRef } = React;
 
+// Delays updating the returned value until `value` has stopped changing
+// for `delayMs` — used so a search box waits for the user to pause typing
+// before firing a server request, instead of one request per keystroke.
+function useDebouncedValue(value, delayMs) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+// Shared destructive-action confirmation dialog — extracted from what was
+// previously JobsTab's own inline delete modal (the only styled confirm
+// dialog in the app; candidate removal used a plain window.confirm(),
+// which looked and behaved inconsistently). Any "are you sure?" prompt
+// should use this instead of window.confirm() or a one-off inline modal.
+function ConfirmModal({ title, message, confirmLabel = "Delete", onConfirm, onCancel }) {
+  return (
+    <div
+      style={{
+        position: "fixed", top: 0, left: 0, width: "100%", height: "100%",
+        background: "rgba(0, 0, 0, 0.45)", display: "flex",
+        justifyContent: "center", alignItems: "center", zIndex: 9999,
+      }}
+    >
+      <div style={{ width: "420px", maxWidth: "90%", background: "#ffffff", borderRadius: "14px", padding: "28px", boxShadow: "0 15px 40px rgba(0,0,0,0.25)" }}>
+        <div style={{ width: "55px", height: "55px", borderRadius: "50%", background: "#fee2e2", color: "#dc2626", display: "flex", justifyContent: "center", alignItems: "center", fontSize: "27px", fontWeight: "bold", margin: "0 auto 18px" }}>
+          !
+        </div>
+        <h2 style={{ textAlign: "center", marginBottom: "10px", fontSize: "22px" }}>{title}</h2>
+        <p style={{ textAlign: "center", color: "#6b7280", lineHeight: "1.6", marginBottom: "25px" }}>{message}</p>
+        <div style={{ display: "flex", justifyContent: "center", gap: "12px" }}>
+          <button type="button" onClick={onCancel} style={{ padding: "10px 22px", borderRadius: "8px", border: "1px solid #d1d5db", background: "#ffffff", color: "#374151", fontWeight: "600", cursor: "pointer" }}>
+            Cancel
+          </button>
+          <button type="button" onClick={onConfirm} style={{ padding: "10px 22px", borderRadius: "8px", border: "none", background: "#dc2626", color: "#ffffff", fontWeight: "600", cursor: "pointer" }}>
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ======================================================================
    BACKEND API CLIENT
    This app used to keep every record in the browser's localStorage (see
@@ -17,6 +62,9 @@ const KEYS = {
 };
 
 function uid(prefix) { return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+const ROLE_LABELS = { hr: "HR", interviewer: "Interviewer", manager: "Manager", operations_manager: "Operations Manager" };
+function roleLabel(role) { return ROLE_LABELS[role] || role; }
 
 // Points at the backend's /api root. Change this ONE line when deploying:
 // - Local development: http://localhost:4000/api
@@ -52,7 +100,15 @@ const api = {
     register: (payload) => apiFetch("/auth/register", { method: "POST", body: payload }),
   },
   jobs: {
-    list: (all) => apiFetch("/jobs" + (all ? "?all=1" : "")),
+    // search is optional — pass a query string to filter server-side
+    // (matches ?search= in backend/src/routes/jobs.routes.js) instead of
+    // downloading every job and filtering with .filter() in the browser.
+    list: (all, search) => {
+      const params = [];
+      if (all) params.push("all=1");
+      if (search) params.push("search=" + encodeURIComponent(search));
+      return apiFetch("/jobs" + (params.length ? "?" + params.join("&") : ""));
+    },
     create: (payload) => apiFetch("/jobs", { method: "POST", body: payload }),
     update: (id, payload) => apiFetch("/jobs/" + id, { method: "PUT", body: payload }),
     setStatus: (id, status) => apiFetch("/jobs/" + id + "/status", { method: "PATCH", body: { status } }),
@@ -67,7 +123,16 @@ const api = {
     qualityCheck: (id) => apiFetch(`/applicants/${id}/quality-check`, { method: "POST" }),
   },
   candidates: {
-    list: () => apiFetch("/candidates"),
+    // jobId/search/sort are optional — pass them to filter/sort
+    // server-side (matches backend/src/routes/candidates.routes.js)
+    // instead of downloading every candidate and filtering in the browser.
+    list: (opts = {}) => {
+      const params = [];
+      if (opts.jobId) params.push("jobId=" + encodeURIComponent(opts.jobId));
+      if (opts.search) params.push("search=" + encodeURIComponent(opts.search));
+      if (opts.sort) params.push("sort=" + encodeURIComponent(opts.sort));
+      return apiFetch("/candidates" + (params.length ? "?" + params.join("&") : ""));
+    },
     togglePin: (id) => apiFetch(`/candidates/${id}/pin`, { method: "PATCH" }),
     remove: (id) => apiFetch(`/candidates/${id}`, { method: "DELETE" }),
   },
@@ -95,6 +160,9 @@ const api = {
     list: () => apiFetch("/notifications"),
     markRead: (id) => apiFetch(`/notifications/${id}/read`, { method: "PATCH" }),
     markAllRead: () => apiFetch("/notifications/read-all", { method: "PATCH" }),
+  },
+  reports: {
+    trends: (weeks) => apiFetch("/reports/trends" + (weeks ? "?weeks=" + weeks : "")),
   },
 };
 
@@ -423,7 +491,7 @@ function Navbar({ user, onLogout, navigate, page }) {
                 <span className="nav-avatar">{user.name.trim().charAt(0).toUpperCase()}</span>
                 <span className="nav-user-text">
                   <span className="nav-user-name">{user.name}</span>
-                  <span className="role-tag">{user.jobTitle || user.role}</span>
+                  <span className="role-tag">{user.jobTitle || roleLabel(user.role)}</span>
                 </span>
               </span>
               <button className="btn btn-outline btn-sm" onClick={onLogout}>Logout</button>
@@ -977,7 +1045,7 @@ function Register({ navigate, onLogin }) {
     try {
       const { token, user } = await api.auth.register(form);
       onLogin({ ...user, token });
-      navigate(user.role === "hr" ? "hr" : user.role === "interviewer" ? "interviewer" : "manager");
+      navigate(user.role === "hr" ? "hr" : user.role === "interviewer" ? "interviewer" : "manager"); // manager and operations_manager both land on the "manager" page — see ManagerDashboard's own role check
     } catch (err) {
       setError(err.message);
     } finally {
@@ -989,7 +1057,7 @@ function Register({ navigate, onLogin }) {
     <div className="container narrow page-section">
       <span className="eyebrow"><span className="eyebrow-dot"></span>STAFF ACCESS</span>
       <h1 style={{ fontSize: "2rem" }}>Staff Registration</h1>
-      <p>Create an account for HR, Interviewer or Hiring Manager access. No demo accounts are pre-loaded  your team creates its own.</p>
+      <p>Create an account for HR, Interviewer, Hiring Manager or Operations Manager access. No demo accounts are pre-loaded  your team creates its own.</p>
       <div className="card">
         <form className="form" onSubmit={handleSubmit}>
           <label>Full Name<input required value={form.name} onChange={(e) => update("name", e.target.value)} /></label>
@@ -1000,12 +1068,16 @@ function Register({ navigate, onLogin }) {
               <option value="hr">HR</option>
               <option value="interviewer">Interviewer</option>
               <option value="manager">Hiring Manager</option>
+              <option value="operations_manager">Operations Manager</option>
             </select>
+            {form.role === "operations_manager" && (
+              <span className="hint">Reporting Dashboard access only — cannot make or undo hiring decisions (that requires the Hiring Manager role).</span>
+            )}
           </label>
-          {form.role === "manager" && (
+          {(form.role === "manager" || form.role === "operations_manager") && (
             <label>Job Title (optional)
-              <span className="hint">E.g. "Operations Manager" — a descriptive label only; access permissions are the same for every Hiring Manager account.</span>
-              <input value={form.jobTitle} onChange={(e) => update("jobTitle", e.target.value)} placeholder="Operations Manager" />
+              <span className="hint">An additional descriptive label shown in the navbar, if you'd like one — it doesn't affect access.</span>
+              <input value={form.jobTitle} onChange={(e) => update("jobTitle", e.target.value)} placeholder="e.g. Senior Talent Manager" />
             </label>
           )}
           {error && <p className="error-text">{error}</p>}
@@ -1336,23 +1408,25 @@ function JobsTab() {
   const [successMessage, setSuccessMessage] = useState("");
   const [editingJobId, setEditingJobId] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const debouncedSearch = useDebouncedValue(searchTerm, 300);
 
   // DELETE MODAL
   const [jobToDelete, setJobToDelete] = useState(null);
 
   // Pulls every job (including closed ones — the HR table shows both)
-  // from GET /api/jobs?all=1, replacing the old synchronous
-  // load(KEYS.jobs) read. Called once on mount and again after every
-  // create/update/close/reopen/delete below.
-  async function refresh() {
+  // from GET /api/jobs?all=1[&search=...], replacing the old synchronous
+  // load(KEYS.jobs) read. Search now happens server-side (PB-03) — the
+  // debounce above means this fires ~300ms after the user stops typing,
+  // not once per keystroke.
+  async function refresh(search) {
     try {
-      const data = await api.jobs.list(true);
+      const data = await api.jobs.list(true, search);
       setJobs(data);
     } catch (err) {
       setError(err.message);
     }
   }
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => { refresh(debouncedSearch); }, [debouncedSearch]);
 
   function showSuccess(message) {
     setSuccessMessage(message);
@@ -1395,7 +1469,7 @@ function JobsTab() {
         requirements: ""
       });
 
-      await refresh();
+      await refresh(debouncedSearch);
     } catch (err) {
       setError(err.message);
     }
@@ -1443,7 +1517,7 @@ function JobsTab() {
     const newStatus = job.status === "open" ? "closed" : "open";
     try {
       await api.jobs.setStatus(job.id, newStatus);
-      await refresh();
+      await refresh(debouncedSearch);
       showSuccess(newStatus === "closed" ? "Job closed successfully." : "Job reopened successfully.");
     } catch (err) {
       setError(err.message);
@@ -1488,20 +1562,14 @@ function JobsTab() {
 
     setJobToDelete(null);
 
-    refresh();
+    refresh(debouncedSearch);
 
     showSuccess("Job deleted successfully.");
   }
 
-  // SEARCH JOB
-  const filteredJobs = jobs.filter((job) => {
-    const search = searchTerm.toLowerCase().trim();
-
-    return (
-      job.title.toLowerCase().includes(search) ||
-      (job.department || "").toLowerCase().includes(search)
-    );
-  });
+  // Search now happens server-side (see refresh() above) — `jobs` is
+  // already the filtered set, no local re-filtering needed.
+  const filteredJobs = jobs;
 
   return (
     <div>
@@ -1511,120 +1579,12 @@ function JobsTab() {
       ========================== */}
 
       {jobToDelete && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            width: "100%",
-            height: "100%",
-            background: "rgba(0, 0, 0, 0.45)",
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
-            zIndex: 9999
-          }}
-        >
-          <div
-            style={{
-              width: "420px",
-              maxWidth: "90%",
-              background: "#ffffff",
-              borderRadius: "14px",
-              padding: "28px",
-              boxShadow: "0 15px 40px rgba(0,0,0,0.25)"
-            }}
-          >
-            {/* ICON */}
-            <div
-              style={{
-                width: "55px",
-                height: "55px",
-                borderRadius: "50%",
-                background: "#fee2e2",
-                color: "#dc2626",
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center",
-                fontSize: "27px",
-                fontWeight: "bold",
-                margin: "0 auto 18px"
-              }}
-            >
-              !
-            </div>
-
-            {/* TITLE */}
-            <h2
-              style={{
-                textAlign: "center",
-                marginBottom: "10px",
-                fontSize: "22px"
-              }}
-            >
-              Delete Job Vacancy
-            </h2>
-
-            {/* MESSAGE */}
-            <p
-              style={{
-                textAlign: "center",
-                color: "#6b7280",
-                lineHeight: "1.6",
-                marginBottom: "25px"
-              }}
-            >
-              Are you sure you want to delete{" "}
-              <strong style={{ color: "#111827" }}>
-                "{jobToDelete.title}"
-              </strong>
-              ?
-              <br />
-              This action cannot be undone.
-            </p>
-
-            {/* BUTTONS */}
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "center",
-                gap: "12px"
-              }}
-            >
-              <button
-                type="button"
-                onClick={cancelDelete}
-                style={{
-                  padding: "10px 22px",
-                  borderRadius: "8px",
-                  border: "1px solid #d1d5db",
-                  background: "#ffffff",
-                  color: "#374151",
-                  fontWeight: "600",
-                  cursor: "pointer"
-                }}
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                onClick={confirmDelete}
-                style={{
-                  padding: "10px 22px",
-                  borderRadius: "8px",
-                  border: "none",
-                  background: "#dc2626",
-                  color: "#ffffff",
-                  fontWeight: "600",
-                  cursor: "pointer"
-                }}
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmModal
+          title="Delete Job Vacancy"
+          message={<>Are you sure you want to delete <strong style={{ color: "#111827" }}>"{jobToDelete.title}"</strong>?<br />This action cannot be undone.</>}
+          onConfirm={confirmDelete}
+          onCancel={cancelDelete}
+        />
       )}
 
       {/* =========================
@@ -2177,10 +2137,21 @@ function CandidatesTab() {
   const [candidates, setCandidates] = useState([]);
   const [profileId, setProfileId] = useState(null);
   const [actionError, setActionError] = useState("");
+  const [candidateToRemove, setCandidateToRemove] = useState(null);
+  const debouncedSearch = useDebouncedValue(search, 300);
 
+  // jobId and search now filter server-side (PB-11) — the debounce above
+  // means a search request fires ~300ms after the user stops typing, not
+  // once per keystroke. "name" sort isn't a server-supported ?sort= value
+  // (only score_desc/score_asc), so that one case still sorts the already
+  // -fetched, already-filtered list client-side below.
   async function refresh() {
     try {
-      const data = await api.candidates.list();
+      const data = await api.candidates.list({
+        jobId: jobFilter || undefined,
+        search: debouncedSearch || undefined,
+        sort: sortBy === "name" ? undefined : sortBy,
+      });
       setCandidates(data);
     } catch (err) {
       setActionError(err.message);
@@ -2188,27 +2159,22 @@ function CandidatesTab() {
   }
   useEffect(() => {
     api.jobs.list(true).then(setJobs).catch((err) => setActionError(err.message));
+  }, []);
+  useEffect(() => {
     refresh();
     // ApplicantsTab's "Add to Candidates" button dispatches this event so
     // this tab picks up the new shortlist entry without a page reload.
     window.addEventListener("hl-candidates-updated", refresh);
     return () => window.removeEventListener("hl-candidates-updated", refresh);
-  }, []);
+  }, [jobFilter, debouncedSearch, sortBy]);
 
   function jobTitle(id) { const j = jobs.find((x) => x.id === id); return j ? j.title : "Unknown"; }
 
-  let visible = candidates.filter((c) => !jobFilter || c.jobId === jobFilter);
-  if (search.trim()) {
-    const q = search.trim().toLowerCase();
-    visible = visible.filter((c) => c.name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q));
-  }
-  visible = visible.sort((a, b) => {
-    if (sortBy === "score_desc") return b.matchScore - a.matchScore;
-    if (sortBy === "score_asc") return a.matchScore - b.matchScore;
-    if (sortBy === "name") return a.name.localeCompare(b.name);
-    return 0;
-  });
-  // Pinned candidates always float to the top, regardless of sort order.
+  // candidates is already filtered + sorted server-side (jobFilter/search/
+  // score sort); only the "name" sort and pinned-float ordering are still
+  // applied here, since they're cheap operations on an already-small,
+  // already-fetched list rather than a full-table download-and-filter.
+  let visible = sortBy === "name" ? [...candidates].sort((a, b) => a.name.localeCompare(b.name)) : candidates;
   visible = [...visible.filter((c) => c.pinned), ...visible.filter((c) => !c.pinned)];
 
   async function togglePin(id) {
@@ -2220,14 +2186,20 @@ function CandidatesTab() {
     }
   }
 
-  async function deleteCandidate(id) {
-    if (!window.confirm("Remove this person from Candidates? They will remain on record in Applicants.")) return;
+  function deleteCandidate(candidate) {
+    setCandidateToRemove(candidate);
+  }
+
+  async function confirmRemoveCandidate() {
+    if (!candidateToRemove) return;
     try {
-      await api.candidates.remove(id);
+      await api.candidates.remove(candidateToRemove.id);
       setProfileId(null);
+      setCandidateToRemove(null);
       await refresh();
     } catch (err) {
       setActionError(err.message);
+      setCandidateToRemove(null);
     }
   }
 
@@ -2275,7 +2247,7 @@ function CandidatesTab() {
                 <td>{new Date(c.addedAt).toLocaleDateString()}</td>
                 <td style={{ whiteSpace: "nowrap" }}>
                   <button className="btn btn-outline btn-sm" onClick={() => setProfileId(c.id)}>View</button>{" "}
-                  <button className="btn btn-outline btn-sm" onClick={() => deleteCandidate(c.id)}>Delete</button>
+                  <button className="btn btn-outline btn-sm" onClick={() => deleteCandidate(c)}>Delete</button>
                 </td>
               </tr>
             ))}
@@ -2294,9 +2266,18 @@ function CandidatesTab() {
               <button className={"btn btn-sm " + (profileCandidate.pinned ? "btn-primary" : "btn-outline")} onClick={() => togglePin(profileCandidate.id)}>
                 {profileCandidate.pinned ? "Unpin" : "Pin candidate"}
               </button>
-              <button className="btn btn-outline btn-sm" onClick={() => deleteCandidate(profileCandidate.id)}>Delete candidate</button>
+              <button className="btn btn-outline btn-sm" onClick={() => deleteCandidate(profileCandidate)}>Delete candidate</button>
             </>
           }
+        />
+      )}
+      {candidateToRemove && (
+        <ConfirmModal
+          title="Remove Candidate"
+          message={<>Remove <strong style={{ color: "#111827" }}>{candidateToRemove.name}</strong> from Candidates? They will remain on record in Applicants.</>}
+          confirmLabel="Remove"
+          onConfirm={confirmRemoveCandidate}
+          onCancel={() => setCandidateToRemove(null)}
         />
       )}
     </div>
@@ -2509,17 +2490,24 @@ function InterviewerDashboard({ user }) {
    ====================================================================== */
 
 function ManagerDashboard({ user }) {
-  const [tab, setTab] = useState("candidates");
+  // operations_manager is a real, distinct-access role (see
+  // backend/src/db/schema.sql and requireRole() usage in
+  // decisions.routes.js): reporting only, no hiring decisions. It's
+  // enforced server-side too — POST/DELETE /decisions/applicants/:id are
+  // requireRole("manager") only — so hiding these tabs here is a UX
+  // convenience, not the actual security boundary.
+  const isOperationsManager = user.role === "operations_manager";
+  const [tab, setTab] = useState(isOperationsManager ? "reports" : "candidates");
   return (
     <div className="container page-section">
-      <h1 style={{ fontSize: "1.9rem" }}>Hiring Manager Dashboard</h1>
+      <h1 style={{ fontSize: "1.9rem" }}>{isOperationsManager ? "Operations Manager Dashboard" : "Hiring Manager Dashboard"}</h1>
       <div className="tabs">
-        <button className={tab === "candidates" ? "tab active" : "tab"} onClick={() => setTab("candidates")}>Review Candidates</button>
-        <button className={tab === "decisions" ? "tab active" : "tab"} onClick={() => setTab("decisions")}>Decision Log</button>
+        {!isOperationsManager && <button className={tab === "candidates" ? "tab active" : "tab"} onClick={() => setTab("candidates")}>Review Candidates</button>}
+        {!isOperationsManager && <button className={tab === "decisions" ? "tab active" : "tab"} onClick={() => setTab("decisions")}>Decision Log</button>}
         <button className={tab === "reports" ? "tab active" : "tab"} onClick={() => setTab("reports")}>Reporting Dashboard</button>
       </div>
-      {tab === "candidates" && <ReviewCandidates user={user} />}
-      {tab === "decisions" && <DecisionLog />}
+      {tab === "candidates" && !isOperationsManager && <ReviewCandidates user={user} />}
+      {tab === "decisions" && !isOperationsManager && <DecisionLog />}
       {tab === "reports" && <Reports />}
     </div>
   );
@@ -2535,6 +2523,7 @@ function ReviewCandidates({ user }) {
   const [detailId, setDetailId] = useState(null);
   const [decisionNotes, setDecisionNotes] = useState("");
   const [error, setError] = useState("");
+  const [confirmingUndo, setConfirmingUndo] = useState(false);
 
   async function refresh() {
     const [apps, iv, fb] = await Promise.all([api.applicants.list(), api.interviews.list(), api.feedback.list()]);
@@ -2577,7 +2566,7 @@ function ReviewCandidates({ user }) {
   // to their prior pipeline stage (see backend/src/routes/decisions.routes.js
   // for exactly how that prior stage is determined).
   async function undoDecision() {
-    if (!window.confirm(`Undo the "${detail.status}" decision for ${detail.name}? This can't be redone automatically.`)) return;
+    setConfirmingUndo(false);
     try {
       await api.decisions.undo(detail.id);
       setDetailId(null);
@@ -2660,10 +2649,19 @@ function ReviewCandidates({ user }) {
             <div className="decision-box">
               <h4>Decision: {detail.status}</h4>
               <p className="muted-small">Made a mistake? You can undo this and return the candidate to their previous stage.</p>
-              <button className="btn btn-outline btn-sm" onClick={undoDecision}>Undo Decision</button>
+              <button className="btn btn-outline btn-sm" onClick={() => setConfirmingUndo(true)}>Undo Decision</button>
             </div>
           )}
         </div>
+      )}
+      {confirmingUndo && detail && (
+        <ConfirmModal
+          title="Undo Decision"
+          message={<>Undo the "{detail.status}" decision for <strong style={{ color: "#111827" }}>{detail.name}</strong>? This can't be redone automatically.</>}
+          confirmLabel="Undo"
+          onConfirm={undoDecision}
+          onCancel={() => setConfirmingUndo(false)}
+        />
       )}
     </div>
   );
@@ -2708,6 +2706,51 @@ function DecisionLog() {
   );
 }
 
+// Trends over time (GET /api/reports/trends) — closes the "Trends" gap in
+// the Reporting Dashboard, which previously only had point-in-time stat
+// cards. Weekly buckets of applications/interviews/hires/rejections,
+// drawn with Chart.js (loaded via index.html) since a from-scratch SVG
+// line chart would just reinvent axis/tick/tooltip logic that library
+// already handles well.
+function TrendsChart() {
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
+  const [trend, setTrend] = useState([]);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.reports.trends(12).then(setTrend).catch((err) => setError(err.message));
+  }, []);
+
+  useEffect(() => {
+    if (!canvasRef.current || !window.Chart) return;
+    if (chartRef.current) chartRef.current.destroy();
+    chartRef.current = new window.Chart(canvasRef.current, {
+      type: "line",
+      data: {
+        labels: trend.map((t) => t.week),
+        datasets: [
+          { label: "Applicants", data: trend.map((t) => t.applicants), borderColor: "#32409E", backgroundColor: "#32409E22", tension: 0.3 },
+          { label: "Interviews", data: trend.map((t) => t.interviews), borderColor: "#E8A33D", backgroundColor: "#E8A33D22", tension: 0.3 },
+          { label: "Hired", data: trend.map((t) => t.hired), borderColor: "#1E8A5F", backgroundColor: "#1E8A5F22", tension: 0.3 },
+          { label: "Rejected", data: trend.map((t) => t.rejected), borderColor: "#C1432E", backgroundColor: "#C1432E22", tension: 0.3 },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
+      },
+    });
+    return () => { if (chartRef.current) chartRef.current.destroy(); };
+  }, [trend]);
+
+  if (error) return <p className="error-text">{error}</p>;
+  if (trend.length === 0) return <p className="empty-state">No activity in the last 12 weeks yet.</p>;
+
+  return <div style={{ height: 280, marginBottom: 30 }}><canvas ref={canvasRef}></canvas></div>;
+}
+
 function Reports() {
   const [jobs, setJobs] = useState([]);
   const [candidates, setCandidates] = useState([]);
@@ -2737,6 +2780,16 @@ function Reports() {
     return { title: j.title, count: jc.length, avg };
   });
 
+  // Department Breakdown — needs no extra API call, since jobs.department
+  // and each applicant's jobId are both already loaded above.
+  const byDepartment = {};
+  jobs.forEach((j) => {
+    const dept = j.department || "Unspecified";
+    if (!byDepartment[dept]) byDepartment[dept] = { jobs: 0, candidates: 0 };
+    byDepartment[dept].jobs += 1;
+    byDepartment[dept].candidates += candidates.filter((c) => c.jobId === j.id).length;
+  });
+
   // Exports the same numbers already on screen as a CSV file — no backend
   // call needed, since every stat here is already computed client-side
   // from data the browser already fetched.
@@ -2760,6 +2813,10 @@ function Reports() {
     lines.push("By Job Position");
     lines.push("Job,Candidates,Avg AI Match Score");
     byJob.forEach((j) => lines.push(`"${j.title}",${j.count},${j.avg}`));
+    lines.push("");
+    lines.push("Department Breakdown");
+    lines.push("Department,Jobs,Candidates");
+    Object.entries(byDepartment).forEach(([dept, d]) => lines.push(`"${dept}",${d.jobs},${d.candidates}`));
 
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -2786,6 +2843,9 @@ function Reports() {
         <div className="stat-card"><div className="stat-value">{rejected}</div><div className="stat-label">Rejected</div></div>
       </div>
 
+      <h3 className="section-title" style={{ marginBottom: 14 }}>Trends (Last 12 Weeks)</h3>
+      <TrendsChart />
+
       <h3 className="section-title" style={{ marginBottom: 14 }}>Candidates by Status</h3>
       <div className="table-wrap">
         <table className="data-table">
@@ -2799,6 +2859,14 @@ function Reports() {
         <table className="data-table">
           <thead><tr><th>Job</th><th>Candidates</th><th>Avg. AI Match Score</th></tr></thead>
           <tbody>{byJob.map((j) => <tr key={j.title}><td>{j.title}</td><td>{j.count}</td><td>{j.avg}</td></tr>)}</tbody>
+        </table>
+      </div>
+
+      <h3 className="section-title" style={{ marginBottom: 14 }}>Department Breakdown</h3>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>Department</th><th>Jobs</th><th>Candidates</th></tr></thead>
+          <tbody>{Object.entries(byDepartment).map(([dept, d]) => <tr key={dept}><td>{dept}</td><td>{d.jobs}</td><td>{d.candidates}</td></tr>)}</tbody>
         </table>
       </div>
     </div>
@@ -2832,7 +2900,7 @@ function App() {
   else if (page === "register") body = user ? <Home navigate={navigate} /> : <Register navigate={navigate} onLogin={handleLogin} />;
   else if (page === "hr") body = user && user.role === "hr" ? <HRDashboard user={user} /> : <Login navigate={navigate} onLogin={handleLogin} />;
   else if (page === "interviewer") body = user && user.role === "interviewer" ? <InterviewerDashboard user={user} /> : <Login navigate={navigate} onLogin={handleLogin} />;
-  else if (page === "manager") body = user && user.role === "manager" ? <ManagerDashboard user={user} /> : <Login navigate={navigate} onLogin={handleLogin} />;
+  else if (page === "manager") body = user && (user.role === "manager" || user.role === "operations_manager") ? <ManagerDashboard user={user} /> : <Login navigate={navigate} onLogin={handleLogin} />;
   else body = <Home navigate={navigate} />;
 
   const isStaffPage = ["hr", "interviewer", "manager", "login", "register"].includes(page);

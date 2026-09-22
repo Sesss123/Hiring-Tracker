@@ -12,6 +12,7 @@ const decisionsRoutes = require("./routes/decisions.routes");
 const messagesRoutes = require("./routes/messages.routes");
 const usersRoutes = require("./routes/users.routes");
 const notificationsRoutes = require("./routes/notifications.routes");
+const reportsRoutes = require("./routes/reports.routes");
 
 if (!process.env.JWT_SECRET) {
   console.error("Missing JWT_SECRET in .env — refusing to start (see .env.example).");
@@ -34,6 +35,7 @@ app.use("/api/decisions", decisionsRoutes); // bulk list at "/", nested at "/app
 app.use("/api/messages", messagesRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/notifications", notificationsRoutes);
+app.use("/api/reports", reportsRoutes);
 
 // Central error handler so a thrown/rejected promise in any route becomes
 // a clean 500 with no stack trace leaked to the client, instead of the

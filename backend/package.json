@@ -12,7 +12,8 @@
     "db:migrate-quality-score": "node src/db/migrate_quality_score.js",
     "db:migrate-notifications": "node src/db/migrate_notifications.js",
     "db:migrate-optional-interviewer": "node src/db/migrate_optional_interviewer.js",
-    "db:migrate-job-title": "node src/db/migrate_job_title.js"
+    "db:migrate-job-title": "node src/db/migrate_job_title.js",
+    "db:migrate-operations-manager": "node src/db/migrate_operations_manager_role.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

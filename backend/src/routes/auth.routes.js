@@ -30,8 +30,8 @@ router.post("/register", asyncHandler(async (req, res) => {
   if (password.length < 6) {
     return res.status(400).json({ error: "Password must be at least 6 characters." });
   }
-  if (!["hr", "interviewer", "manager"].includes(role)) {
-    return res.status(400).json({ error: "Role must be one of: hr, interviewer, manager." });
+  if (!["hr", "interviewer", "manager", "operations_manager"].includes(role)) {
+    return res.status(400).json({ error: "Role must be one of: hr, interviewer, manager, operations_manager." });
   }
 
   const normalizedEmail = email.toLowerCase();
@@ -40,9 +40,9 @@ router.post("/register", asyncHandler(async (req, res) => {
     return res.status(409).json({ error: "An account with that email already exists." });
   }
 
-  // jobTitle is a purely descriptive label (e.g. "Operations Manager" on a
-  // manager-role account) — it plays no part in access control, which is
-  // still driven entirely by role. See schema.sql's comment on this column.
+  // jobTitle is a separate, purely descriptive label (unrelated to the
+  // operations_manager role above) for any other title someone wants
+  // shown in the UI — it plays no part in access control either way.
   const password_hash = await bcrypt.hash(password, 10);
   const id = uid("user");
   await pool.query(

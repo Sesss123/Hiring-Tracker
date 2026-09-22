@@ -26,21 +26,20 @@ USE hireline;
 -- ---------------------------------------------------------------------
 -- users  (was: plaintext { id, name, email, password, role } in KEYS.users)
 -- Login now checks password_hash with bcrypt instead of a plaintext ===.
--- Only hr / interviewer / manager are real, modeled roles with distinct
--- access control (see auth/middleware.js's requireRole()) — there is no
--- separate "Operations Manager" login role or permission set.
--- job_title is purely descriptive (shown in the UI, e.g. "Operations
--- Manager"), not used anywhere in access control — a deliberate choice to
--- let a manager account carry that job title without adding a 4th role
--- and its own ENUM value/permission rules, which would be a bigger schema
--- change for a title that the team never defined distinct permissions for.
+-- Four real, distinct-access roles (see auth/middleware.js's
+-- requireRole()): hr, interviewer, manager, and operations_manager.
+-- operations_manager was added as a genuine 4th role, not reusing
+-- job_title as a cosmetic label, once the team defined a real permission
+-- difference: it can view the Reporting Dashboard (stats/trends/export)
+-- but cannot make or undo hiring decisions — 'manager' can do both.
+-- job_title remains available for any other purely descriptive title.
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
   id            VARCHAR(40)  PRIMARY KEY,
   name          VARCHAR(120) NOT NULL,
   email         VARCHAR(190) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
-  role          ENUM('hr','interviewer','manager') NOT NULL,
+  role          ENUM('hr','interviewer','manager','operations_manager') NOT NULL,
   job_title     VARCHAR(80)  NULL,
   created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
