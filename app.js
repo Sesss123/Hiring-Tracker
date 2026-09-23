@@ -55,7 +55,7 @@ function ConfirmModal({ title, message, confirmLabel = "Delete", onConfirm, onCa
    purpose: it holds the signed-in user plus the JWT the backend issued
    at login, so a page refresh doesn't log you out — that's normal SPA
    session handling, not the old plaintext-password problem.
-   ====================================================================== */
+   ====================================================================== */stem 
 
 const KEYS = {
   session: "hl_session",
@@ -63,7 +63,7 @@ const KEYS = {
 
 function uid(prefix) { return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
-const ROLE_LABELS = { hr: "HR", interviewer: "Interviewer", manager: "Manager", operations_manager: "Operations Manager" };
+const ROLE_LABELS = { hr: "HR", interviewer: "Interviewer", manager: "Hiring Manager", operations_manager: "Operations Manager" };
 function roleLabel(role) { return ROLE_LABELS[role] || role; }
 
 // Points at the backend's /api root. Change this ONE line when deploying:

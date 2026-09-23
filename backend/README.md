@@ -66,6 +66,7 @@ npm run db:seed
   | hr          | hr@Altrium.test            | hr12345        |
   | interviewer | interviewer@Altrium.test   | interview123   |
   | manager     | manager@Altrium.test       | manager123     |
+  | operations_manager | operations@Altrium.test | operations123 |
 
 ## 4. Run it
 

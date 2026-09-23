@@ -51,6 +51,7 @@ const USERS = [
   { name: "Hansi Perera", email: "hr@Altrium.test", password: "hr12345", role: "hr" },
   { name: "Nimal Fernando", email: "interviewer@Altrium.test", password: "interview123", role: "interviewer" },
   { name: "Amanda Silva", email: "manager@Altrium.test", password: "manager123", role: "manager" },
+  { name: "David Jayasinghe", email: "operations@Altrium.test", password: "operations123", role: "operations_manager" },
 ];
 
 async function main() {
