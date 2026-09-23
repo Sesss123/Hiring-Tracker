@@ -67,9 +67,9 @@ const ROLE_LABELS = { hr: "HR", interviewer: "Interviewer", manager: "Manager", 
 function roleLabel(role) { return ROLE_LABELS[role] || role; }
 
 // Points at the backend's /api root. Change this ONE line when deploying:
-// - Local development: http://localhost:4000/api
+// - Production backend hosted on Railway
 // - Deployed (e.g. Railway): https://<your-backend>.up.railway.app/api
-const API_BASE = "http://localhost:4000/api";
+const API_BASE = "https://hiring-tracker-production-ec6e.up.railway.app/api";
 
 function authHeaders() {
   const s = getSession();
