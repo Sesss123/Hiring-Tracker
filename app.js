@@ -69,7 +69,7 @@ function roleLabel(role) { return ROLE_LABELS[role] || role; }
 // Points at the backend's /api root. Change this ONE line when deploying:
 // - Production backend hosted on Railway
 // - Deployed (e.g. Railway): https://<your-backend>.up.railway.app/api
-const API_BASE = "https://hiring-tracker-production-ec6e.up.railway.app/api";
+const API_BASE = "https://hiring-tracker-production-0941.up.railway.app/api";
 
 function authHeaders() {
   const s = getSession();
@@ -78,11 +78,18 @@ function authHeaders() {
 
 async function apiFetch(path, options = {}) {
   let res;
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   try {
     res = await fetch(API_BASE + path, {
       method: options.method || "GET",
-      headers: { "Content-Type": "application/json", ...authHeaders(), ...(options.headers || {}) },
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      headers: {
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
+        ...authHeaders(),
+        ...(options.headers || {}),
+      },
+      body: options.body !== undefined
+        ? (isFormData ? options.body : JSON.stringify(options.body))
+        : undefined,
     });
   } catch (networkErr) {
     throw new Error("Could not reach the HireLine server. Is the backend running (npm start in /backend)?");
@@ -115,12 +122,24 @@ const api = {
     remove: (id) => apiFetch("/jobs/" + id, { method: "DELETE" }),
   },
   applicants: {
-    apply: (payload) => apiFetch("/applicants", { method: "POST", body: payload }),
+    apply: (payload, file) => {
+      const body = new FormData();
+      Object.entries(payload).forEach(([key, value]) => {
+        if (value !== undefined && value !== null) body.append(key, value);
+      });
+      body.append("cv", file);
+      return apiFetch("/applicants", { method: "POST", body });
+    },
     list: (jobId) => apiFetch("/applicants" + (jobId ? "?jobId=" + jobId : "")),
     setStatus: (id, status) => apiFetch(`/applicants/${id}/status`, { method: "PATCH", body: { status } }),
     promote: (id) => apiFetch(`/applicants/${id}/promote`, { method: "POST" }),
     cvSimilarity: (jobId) => apiFetch(`/applicants/cv-similarity?jobId=${jobId}`),
     qualityCheck: (id) => apiFetch(`/applicants/${id}/quality-check`, { method: "POST" }),
+    uploadCV: (id, file) => {
+      const body = new FormData();
+      body.append("cv", file);
+      return apiFetch(`/applicants/${id}/cv`, { method: "POST", body });
+    },
   },
   candidates: {
     // jobId/search/sort are optional — pass them to filter/sort
@@ -209,18 +228,42 @@ async function deleteAllCVFiles() {
     tx.onerror = () => { const err = tx.error; db.close(); reject(err); };
   });
 }
+function cvApiPath(record, download = false) {
+  const collection = record.applicantId ? "candidates" : "applicants";
+  return `/${collection}/${record.id}/cv${download ? "/download" : ""}`;
+}
+
+async function fetchCVBlob(record, download = false) {
+  if (record.resumeFileAvailable && record.id) {
+    const res = await fetch(API_BASE + cvApiPath(record, download), { headers: authHeaders() });
+    if (!res.ok) {
+      let message = `Unable to load the CV file (${res.status}).`;
+      try { const data = await res.json(); if (data && data.error) message = data.error; } catch (_) {}
+      throw new Error(message);
+    }
+    return res.blob();
+  }
+
+  // Backwards-compatible fallback for records created before server-side
+  // storage. This only works in the browser that originally received/stored
+  // the file; HR can use the new Upload CV action to migrate such records.
+  if (record.resumeFileData) {
+    const res = await fetch(record.resumeFileData);
+    return res.blob();
+  }
+  if (record.resumeFileId) return getCVFile(record.resumeFileId);
+  return null;
+}
+
 async function downloadCV(record) {
   try {
-    let url = record.resumeFileData || null; // legacy records remain supported
-    if (!url && record.resumeFileId) {
-      const blob = await getCVFile(record.resumeFileId);
-      if (blob) url = URL.createObjectURL(blob);
-    }
-    if (!url) { alert("CV file was not found in this browser."); return; }
+    const blob = await fetchCVBlob(record, true);
+    if (!blob) { alert("CV file is unavailable. Ask HR to upload it again."); return; }
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = record.resumeFileName || "cv";
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    if (record.resumeFileId && !record.resumeFileData) setTimeout(() => URL.revokeObjectURL(url), 1000);
-  } catch (e) { console.error(e); alert("Unable to download the CV file."); }
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e) { console.error(e); alert(e.message || "Unable to download the CV file."); }
 }
 
 async function viewCV(record) {
@@ -233,23 +276,19 @@ async function viewCV(record) {
     return;
   }
   try {
-    let url = record.resumeFileData || null; // legacy records remain supported
-    let objectUrl = false;
-    if (!url && record.resumeFileId) {
-      const blob = await getCVFile(record.resumeFileId);
-      if (blob) { url = URL.createObjectURL(blob); objectUrl = true; }
-    }
-    if (!url) {
+    const blob = await fetchCVBlob(record);
+    if (!blob) {
       newTab.close();
-      alert("CV file was not found in this browser.");
+      alert("CV file is unavailable. Ask HR to upload it again.");
       return;
     }
+    const url = URL.createObjectURL(blob);
     newTab.location.href = url;
-    if (objectUrl) setTimeout(() => URL.revokeObjectURL(url), 60000);
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   } catch (e) {
     console.error(e);
     newTab.close();
-    alert("Unable to open the CV file.");
+    alert(e.message || "Unable to open the CV file.");
   }
 }
 
@@ -267,27 +306,6 @@ function stageIndex(status) {
   return 0;
 }
 
-// The sample jobs and demo staff accounts (hr@Altrium.test / hr12345, etc.)
-// used to be re-seeded into localStorage here on first load. That data now
-// lives in MySQL and is loaded once with `npm run db:seed` in /backend —
-// see backend/src/db/seed.js, which seeds the exact same jobs and accounts
-// (with bcrypt-hashed passwords instead of plaintext). Client-side seeding
-// and the "Reset demo data" button were removed rather than reproduced:
-// resetting a shared server database from a button in one person's browser
-// isn't the same operation it used to be, and doing that safely (who's
-// allowed to wipe production data for everyone?) is a scope decision for
-// the team, not something to bolt on silently during this integration.
-
-/* ======================================================================
-   "AI" CV MATCHING ENGINE (simulated  not a real AI/ML model, no API
-   calls). It builds a weighted vocabulary from the job posting (words
-   in "requirements" count more than general description words) and
-   compares it to the candidate's CV text using cosine similarity of
-   term-frequency vectors. The score is computed fresh from whatever
-   text is in the job posting and the CV  there is no fixed/hardcoded
-   score table, so every job/CV pair produces a genuinely different,
-   calculated result.
-   ====================================================================== */
 
 const STOPWORDS = new Set([
   "the","and","for","are","with","you","your","our","will","have","has","that","this","from",
@@ -833,8 +851,8 @@ function JobDetails({ jobId, navigate }) {
     const f = e.target.files[0];
     if (!f) return;
     setErrors((er) => ({ ...er, file: "" }));
-    if (f.size > 20 * 1024 * 1024) {
-      setErrors((er) => ({ ...er, file: "Please choose a file under 20MB." }));
+    if (f.size > 5 * 1024 * 1024) {
+      setErrors((er) => ({ ...er, file: "Please choose a file that is 5MB or smaller." }));
       return;
     }
     setFile(f);
@@ -885,13 +903,10 @@ function JobDetails({ jobId, navigate }) {
       // browser's IndexedDB — the backend was deliberately not made to
       // store the binary file (see backend/README.md) — so that part is
       // unchanged.
-      const fileId = uid("cv");
-      await saveCVFile(file, fileId);
       const applicant = await api.applicants.apply({
         jobId: job.id, name: form.name, email: form.email, phone: form.phone,
         coverNote: form.cover_note, resumeText: form.resume_text,
-        resumeFileName: file.name, resumeFileType: file.type, resumeFileId: fileId,
-      });
+      }, file);
       setResult(applicant);
     } catch (err) {
       console.error("Application submission failed:", err);
@@ -1117,15 +1132,18 @@ function HRDashboard() {
    a record with the same shape either way, plus a list of action
    buttons specific to where it's being shown from. */
 function CVFileActions({ record, preview = false }) {
-  const [previewUrl, setPreviewUrl] = useState(record.resumeFileData || "");
+  const [previewUrl, setPreviewUrl] = useState("");
+  const hasFile = !!(record.resumeFileAvailable || record.resumeFileData || record.resumeFileId);
   useEffect(() => {
     let objectUrl = "";
-    if (!record.resumeFileData && record.resumeFileId) {
-      getCVFile(record.resumeFileId).then((blob) => { if (blob) { objectUrl = URL.createObjectURL(blob); setPreviewUrl(objectUrl); } }).catch(console.error);
+    if (preview && hasFile) {
+      fetchCVBlob(record).then((blob) => {
+        if (blob) { objectUrl = URL.createObjectURL(blob); setPreviewUrl(objectUrl); }
+      }).catch(console.error);
     }
     return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [record.resumeFileId, record.resumeFileData]);
-  if (!record.resumeFileData && !record.resumeFileId) return <p className="muted-small">No CV file on record.</p>;
+  }, [record.id, record.resumeFileAvailable, record.resumeFileId, record.resumeFileData, preview]);
+  if (!hasFile) return <p className="muted-small">CV file unavailable — HR must upload it again.</p>;
   return <>
     <button type="button" className="btn btn-outline btn-sm" onClick={() => viewCV(record)}>View CV</button>{" "}<button type="button" className="btn btn-outline btn-sm" onClick={() => downloadCV(record)}>⬇ Download</button>
     {preview && previewUrl && <iframe title="CV preview" src={previewUrl} className="cv-preview-frame" />}
@@ -1928,6 +1946,9 @@ function ApplicantsTab() {
   // New AI CV-to-CV comparison filter. The selected job determines
   // which candidate CVs are compared with one another.
   const [cvCompareJob, setCvCompareJob] = useState("");
+  const [peerCVScores, setPeerCVScores] = useState({});
+  const [cvCompareLoading, setCvCompareLoading] = useState(false);
+  const [cvCompareError, setCvCompareError] = useState("");
   const [applicants, setApplicants] = useState([]);
   const [candidateApplicantIds, setCandidateApplicantIds] = useState([]);
   const [scheduling, setScheduling] = useState(null);
@@ -1956,7 +1977,22 @@ function ApplicantsTab() {
     refreshCandidateIds().catch((err) => setActionError(err.message));
   }, []);
 
-  const peerCVScores = cvCompareJob ? calculatePeerCVScores(applicants, cvCompareJob) : {};
+  useEffect(() => {
+    let cancelled = false;
+    if (!cvCompareJob) {
+      setPeerCVScores({});
+      setCvCompareError("");
+      return () => { cancelled = true; };
+    }
+    setCvCompareLoading(true);
+    setCvCompareError("");
+    api.applicants.cvSimilarity(cvCompareJob)
+      .then((scores) => { if (!cancelled) setPeerCVScores(scores || {}); })
+      .catch((err) => { if (!cancelled) { setPeerCVScores({}); setCvCompareError(err.message); } })
+      .finally(() => { if (!cancelled) setCvCompareLoading(false); });
+    return () => { cancelled = true; };
+  }, [cvCompareJob]);
+
   const visible = applicants
     .filter((a) => (!jobFilter || a.jobId === jobFilter) && (!cvCompareJob || a.jobId === cvCompareJob))
     .sort((a, b) => cvCompareJob
@@ -1989,6 +2025,28 @@ function ApplicantsTab() {
     } finally {
       setQualityCheckingId(null);
     }
+  }
+
+  function chooseCVForUpload(applicantId) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain";
+    input.onchange = async () => {
+      const selected = input.files && input.files[0];
+      if (!selected) return;
+      if (selected.size > 5 * 1024 * 1024) {
+        setActionError("CV file must be 5MB or smaller.");
+        return;
+      }
+      setActionError("");
+      try {
+        await api.applicants.uploadCV(applicantId, selected);
+        await refresh();
+      } catch (err) {
+        setActionError(err.message);
+      }
+    };
+    input.click();
   }
 
   // Client-side guard preserved from the old submitSchedule() — the
@@ -2053,8 +2111,14 @@ function ApplicantsTab() {
       </label>
       {cvCompareJob && (
         <p className="muted-small" style={{ marginBottom: 12 }}>
-          CVs are compared with the other applicants for the selected job and ranked by average CV similarity.
+          {cvCompareLoading
+            ? "Comparing CVs..."
+            : "CVs are compared on the server with the other applicants for the selected job and ranked by average CV similarity."}
         </p>
+      )}
+      {cvCompareError && <p className="error-text" style={{ marginBottom: 12 }}>{cvCompareError}</p>}
+      {cvCompareJob && !cvCompareLoading && !cvCompareError && visible.length < 2 && (
+        <p className="muted-small" style={{ marginBottom: 12 }}>At least two CVs are required for a meaningful comparison.</p>
       )}
 
       {interviewers.length === 0 && <p className="muted-small" style={{ marginBottom: 12 }}>Tip: register an Interviewer account first so you can assign interviews below.</p>}
@@ -2085,7 +2149,9 @@ function ApplicantsTab() {
                       {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </td>
-                  <td>{(a.resumeFileData || a.resumeFileId) ? <><button className="btn btn-outline btn-sm" onClick={() => viewCV(a)}>View CV</button>{" "}<button className="btn btn-outline btn-sm" onClick={() => downloadCV(a)}>Download</button></> : <span className="muted-small"></span>}</td>
+                  <td>{a.resumeFileAvailable
+                    ? <><button className="btn btn-outline btn-sm" onClick={() => viewCV(a)}>View CV</button>{" "}<button className="btn btn-outline btn-sm" onClick={() => downloadCV(a)}>Download</button></>
+                    : <button className="btn btn-outline btn-sm" onClick={() => chooseCVForUpload(a.id)}>Upload CV</button>}</td>
                   <td style={{ whiteSpace: "nowrap" }}>
                     <button className="btn btn-outline btn-sm" onClick={() => setProfileId(a.id)}>View</button>{" "}
                     <button className="btn btn-outline btn-sm" onClick={() => setScheduling(scheduling === a.id ? null : a.id)}>{scheduling === a.id ? "Cancel" : "Schedule"}</button>
@@ -2455,7 +2521,7 @@ function InterviewerDashboard({ user }) {
                 <h3 style={{ fontSize: "1.1rem" }}>{c ? c.name : "Unknown"}  {j ? j.title : ""}</h3>
                 <p className="muted-small">Scheduled: {new Date(iv.scheduledAt).toLocaleString()} · Status: {iv.status}</p>
                 <p className="muted-small">AI Match Score: {c ? c.matchScore : "-"}%</p>
-                {c && (c.resumeFileData || c.resumeFileId) && <a className="cv-link" onClick={() => downloadCV(c)}>⬇ Download CV ({c.resumeFileName})</a>}
+                {c && (c.resumeFileAvailable || c.resumeFileData || c.resumeFileId) && <a className="cv-link" onClick={() => downloadCV(c)}>⬇ Download CV ({c.resumeFileName})</a>}
               </div>
               <button className="btn btn-outline btn-sm" onClick={() => openFeedback(iv)}>{fb ? "Edit Feedback" : "Give Feedback"}</button>
             </div>
@@ -2618,7 +2684,7 @@ function ReviewCandidates({ user }) {
           <h3>{detail.name}  {(jobFor(detail.jobId) || {}).title}</h3>
           <PipelineRail currentIndex={stageIndex(detail.status)} rejected={detail.status === "Rejected"} showLabels />
           <p style={{ marginTop: 14 }}><strong>AI Match Score:</strong> {detail.matchScore}% · <strong>Avg. Interview Rating:</strong> {avgRating()}/5</p>
-          {(detail.resumeFileData || detail.resumeFileId) && <p><a className="cv-link" onClick={() => downloadCV(detail)}>⬇ Download CV ({detail.resumeFileName})</a></p>}
+          {(detail.resumeFileAvailable || detail.resumeFileData || detail.resumeFileId) && <p><a className="cv-link" onClick={() => downloadCV(detail)}>⬇ Download CV ({detail.resumeFileName})</a></p>}
           <div>
             {detail.matchedKeywords.map((k) => <span className="keyword-chip hit" key={k}>{k}</span>)}
             {detail.missingKeywords.map((k) => <span className="keyword-chip miss" key={k}>{k}</span>)}
