@@ -66,14 +66,28 @@ async function main() {
   }
 
   for (const u of USERS) {
-    const [rows] = await pool.query("SELECT id FROM users WHERE email = :email LIMIT 1", { email: u.email.toLowerCase() });
-    if (rows.length) { console.log(`Skip user (exists): ${u.email}`); continue; }
     const password_hash = await bcrypt.hash(u.password, 10);
-    await pool.query(
-      "INSERT INTO users (id, name, email, password_hash, role) VALUES (:id, :name, :email, :password_hash, :role)",
-      { id: uid("user"), name: u.name, email: u.email.toLowerCase(), password_hash, role: u.role }
+    const email = u.email.toLowerCase();
+    const [rows] = await pool.query(
+      "SELECT id FROM users WHERE email = :email LIMIT 1",
+      { email }
     );
-    console.log(`Seeded user: ${u.email} (role: ${u.role})`);
+
+    if (rows.length) {
+      // Keep the documented demo credentials usable even when this database
+      // contains an account created by an older version of the application.
+      await pool.query(
+        "UPDATE users SET name = :name, password_hash = :password_hash, role = :role WHERE id = :id",
+        { id: rows[0].id, name: u.name, password_hash, role: u.role }
+      );
+      console.log(`Updated demo user: ${u.email} (role: ${u.role})`);
+    } else {
+      await pool.query(
+        "INSERT INTO users (id, name, email, password_hash, role) VALUES (:id, :name, :email, :password_hash, :role)",
+        { id: uid("user"), name: u.name, email, password_hash, role: u.role }
+      );
+      console.log(`Seeded user: ${u.email} (role: ${u.role})`);
+    }
   }
 
   console.log("\nDemo login credentials (unchanged from the old app, now checked against bcrypt hashes):");
