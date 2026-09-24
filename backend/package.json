@@ -4,7 +4,7 @@
   "description": "Real backend + MySQL database + secure login for HireLine (replaces the old localStorage-only, plaintext-password client-side app).",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "npm run db:init && npm run db:seed && node src/server.js",
     "dev": "node --watch src/server.js",
     "db:init": "node src/db/init.js",
     "db:seed": "node src/db/seed.js",
