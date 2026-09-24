@@ -89,12 +89,6 @@ CREATE TABLE IF NOT EXISTS applicants (
   CONSTRAINT fk_applicants_job FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- Upgrade existing Railway databases created by an older schema. These are
--- idempotent on current MySQL versions, so npm run db:init remains safe to
--- execute as a pre-deploy command.
-ALTER TABLE applicants ADD COLUMN IF NOT EXISTS resume_file_size BIGINT UNSIGNED NULL AFTER resume_file_id;
-ALTER TABLE applicants ADD COLUMN IF NOT EXISTS resume_file_data LONGBLOB NULL AFTER resume_file_size;
-
 -- ---------------------------------------------------------------------
 -- candidates  (KEYS.candidates -> "hl_candidates_shortlist": the smaller,
 -- HR-curated shortlist with its own pin/search/sort/delete)

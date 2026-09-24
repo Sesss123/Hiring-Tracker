@@ -20,6 +20,30 @@ async function main() {
 
   console.log("Connected. Applying schema.sql ...");
   await connection.query(schema);
+
+  // MySQL does not consistently support `ADD COLUMN IF NOT EXISTS` across
+  // Railway versions. Check the existing table first so upgrades remain
+  // idempotent without stopping the rest of schema.sql halfway through.
+  const [resumeColumns] = await connection.query(
+    `SELECT COLUMN_NAME
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = 'hireline'
+        AND TABLE_NAME = 'applicants'
+        AND COLUMN_NAME IN ('resume_file_size', 'resume_file_data')`
+  );
+  const existingColumns = new Set(resumeColumns.map((row) => row.COLUMN_NAME));
+
+  if (!existingColumns.has("resume_file_size")) {
+    await connection.query(
+      "ALTER TABLE hireline.applicants ADD COLUMN resume_file_size BIGINT UNSIGNED NULL AFTER resume_file_id"
+    );
+  }
+  if (!existingColumns.has("resume_file_data")) {
+    await connection.query(
+      "ALTER TABLE hireline.applicants ADD COLUMN resume_file_data LONGBLOB NULL AFTER resume_file_size"
+    );
+  }
+
   console.log("Schema applied: database 'hireline' and all tables are ready.");
   await connection.end();
 }
