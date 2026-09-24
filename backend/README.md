@@ -108,17 +108,22 @@ that's taken). `GET /api/health` should return `{"ok":true}`.
   both "no such user" and "wrong password" (same as before) — this was
   already correct in the old app and is preserved, not changed.
 
-## What this backend does not do yet (scope, not oversight)
+## CV file storage
 
-- **CV files themselves** (the actual PDF/DOCX bytes) still need to live
-  wherever the frontend puts them — the old app stores them in the
-  browser's IndexedDB (`hl_cv_files`, keyed by `fileId`) specifically to
-  avoid the earlier `localStorage` crash bug. This backend stores
-  `resume_file_id` / `resume_file_name` / `resume_file_type` (the
-  metadata) and the extracted `resume_text` used for scoring, but not the
-  binary file. Migrating the file storage itself to the server (e.g. to
-  disk or an object store) is a separate piece of work the team should
-  scope deliberately, not something to bolt on silently here.
+The backend now accepts an optional `cv` file in the public applicant
+submission endpoint using `multipart/form-data`. PDF, DOCX and TXT files up
+to 5 MB are stored in MySQL alongside their metadata, so authorised staff
+can view or download the same file from any browser. Existing JSON-only
+submissions remain supported during the frontend migration.
+
+- `GET /api/applicants/:id/cv` — authenticated inline preview
+- `GET /api/applicants/:id/cv/download` — authenticated download
+- `POST /api/applicants/:id/cv` — HR-only upload/re-upload for legacy records
+- `GET /api/candidates/:id/cv` and `/download` — serve the linked applicant CV
+
+Records created before this change do not have recoverable server-side file
+bytes. Their original files must be re-uploaded from the browser/device that
+still has them or obtained again from the applicant.
 - **PB-24 (Notify Assigned Interviewer)** — still has no backend support
   here either, consistent with it having zero code in the current app.
 

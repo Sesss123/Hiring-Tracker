@@ -1,4 +1,6 @@
 const express = require("express");
+const path = require("path");
+const multer = require("multer");
 const asyncHandler = require("../asyncHandler");
 const pool = require("../db/pool");
 const { toCamel } = require("../camelCase");
@@ -7,6 +9,66 @@ const { analyzeMatch, analyzeCVToCVSimilarity } = require("../matching");
 const { scoreCVQuality } = require("../gemini");
 
 const router = express.Router();
+
+const MAX_CV_BYTES = 5 * 1024 * 1024;
+const ALLOWED_CV_TYPES = new Set([
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "text/plain",
+]);
+const ALLOWED_CV_EXTENSIONS = new Set([".pdf", ".docx", ".txt"]);
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_CV_BYTES, files: 1 },
+  fileFilter: (req, file, callback) => {
+    const extension = path.extname(file.originalname || "").toLowerCase();
+    if (!ALLOWED_CV_TYPES.has(file.mimetype) || !ALLOWED_CV_EXTENSIONS.has(extension)) {
+      return callback(new Error("CV must be a PDF, DOCX or TXT file."));
+    }
+    callback(null, true);
+  },
+});
+
+function uploadSingleCV(req, res, next) {
+  upload.single("cv")(req, res, (err) => {
+    if (!err) return next();
+    const message = err.code === "LIMIT_FILE_SIZE"
+      ? "CV file must be 5 MB or smaller."
+      : err.message || "Unable to upload the CV file.";
+    res.status(400).json({ error: message });
+  });
+}
+
+// Never include the binary column in ordinary JSON list/detail responses.
+const APPLICANT_COLUMNS = `id, job_id, name, email, phone, cover_note, resume_text,
+  resume_file_name, resume_file_type, resume_file_id, resume_file_size,
+  (resume_file_data IS NOT NULL) AS resume_file_available,
+  match_score, matched_keywords, missing_keywords, quality_score,
+  quality_breakdown, status, applied_at`;
+
+function safeDownloadName(name) {
+  return (name || "cv").replace(/[\r\n"\\/]/g, "_");
+}
+
+async function sendApplicantCV(req, res, disposition) {
+  const [rows] = await pool.query(
+    "SELECT resume_file_name, resume_file_type, resume_file_data FROM applicants WHERE id = :id LIMIT 1",
+    { id: req.params.id }
+  );
+  if (!rows.length) return res.status(404).json({ error: "Applicant not found." });
+  const record = rows[0];
+  if (!record.resume_file_data) {
+    return res.status(404).json({ error: "CV file is unavailable. Re-upload is required." });
+  }
+  const filename = safeDownloadName(record.resume_file_name);
+  res.set({
+    "Content-Type": record.resume_file_type || "application/octet-stream",
+    "Content-Length": record.resume_file_data.length,
+    "Content-Disposition": `${disposition}; filename="${filename}"`,
+    "Cache-Control": "private, no-store",
+  });
+  res.send(record.resume_file_data);
+}
 
 function uid(prefix) {
   return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -21,7 +83,7 @@ const STATUS_OPTIONS = ["Applied", "Shortlisted", "Interview Scheduled", "Interv
 // IndexedDB by the frontend (as it is today) — this backend stores the
 // file's metadata/fileId and the extracted resume_text, not the binary.
 // See README "What this backend does not do yet".
-router.post("/", asyncHandler(async (req, res) => {
+router.post("/", uploadSingleCV, asyncHandler(async (req, res) => {
   const { jobId, name, email, phone, coverNote, resumeText, resumeFileName, resumeFileType, resumeFileId } = req.body || {};
   if (!jobId || !name || !email || !phone || !coverNote || !resumeText) {
     return res.status(400).json({ error: "Name, email, phone, cover note and CV text are all required." });
@@ -37,18 +99,22 @@ router.post("/", asyncHandler(async (req, res) => {
   await pool.query(
     `INSERT INTO applicants
       (id, job_id, name, email, phone, cover_note, resume_text, resume_file_name, resume_file_type, resume_file_id,
-       match_score, matched_keywords, missing_keywords, status)
+       resume_file_size, resume_file_data, match_score, matched_keywords, missing_keywords, status)
      VALUES
       (:id, :jobId, :name, :email, :phone, :coverNote, :resumeText, :resumeFileName, :resumeFileType, :resumeFileId,
-       :score, :matchedKeywords, :missingKeywords, 'Applied')`,
+       :resumeFileSize, :resumeFileData, :score, :matchedKeywords, :missingKeywords, 'Applied')`,
     {
       id, jobId, name, email, phone, coverNote, resumeText,
-      resumeFileName: resumeFileName || null, resumeFileType: resumeFileType || null, resumeFileId: resumeFileId || null,
+      resumeFileName: req.file ? req.file.originalname : (resumeFileName || null),
+      resumeFileType: req.file ? req.file.mimetype : (resumeFileType || null),
+      resumeFileId: resumeFileId || null,
+      resumeFileSize: req.file ? req.file.size : null,
+      resumeFileData: req.file ? req.file.buffer : null,
       score, matchedKeywords: JSON.stringify(matchedKeywords), missingKeywords: JSON.stringify(missingKeywords),
     }
   );
 
-  const [rows] = await pool.query("SELECT * FROM applicants WHERE id = :id", { id });
+  const [rows] = await pool.query(`SELECT ${APPLICANT_COLUMNS} FROM applicants WHERE id = :id`, { id });
   res.status(201).json(toCamel(rows[0]));
 }));
 
@@ -59,10 +125,39 @@ router.post("/", asyncHandler(async (req, res) => {
 // role restriction at all in the old app). ?jobId= filters to one job.
 router.get("/", requireAuth, asyncHandler(async (req, res) => {
   const sql = req.query.jobId
-    ? "SELECT * FROM applicants WHERE job_id = :jobId ORDER BY match_score DESC"
-    : "SELECT * FROM applicants ORDER BY match_score DESC";
+    ? `SELECT ${APPLICANT_COLUMNS} FROM applicants WHERE job_id = :jobId ORDER BY match_score DESC`
+    : `SELECT ${APPLICANT_COLUMNS} FROM applicants ORDER BY match_score DESC`;
   const [rows] = await pool.query(sql, { jobId: req.query.jobId });
   res.json(toCamel(rows));
+}));
+
+// GET /api/applicants/:id/cv — authenticated inline preview.
+router.get("/:id/cv", requireAuth, asyncHandler(async (req, res) => {
+  await sendApplicantCV(req, res, "inline");
+}));
+
+// GET /api/applicants/:id/cv/download — authenticated attachment download.
+router.get("/:id/cv/download", requireAuth, asyncHandler(async (req, res) => {
+  await sendApplicantCV(req, res, "attachment");
+}));
+
+// POST /api/applicants/:id/cv — HR can attach/re-attach files for legacy
+// records whose original file existed only in a browser's IndexedDB.
+router.post("/:id/cv", requireAuth, requireRole("hr"), uploadSingleCV, asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "CV file is required." });
+  const [result] = await pool.query(
+    `UPDATE applicants
+       SET resume_file_name = :name, resume_file_type = :type,
+           resume_file_size = :size, resume_file_data = :data
+     WHERE id = :id`,
+    { id: req.params.id, name: req.file.originalname, type: req.file.mimetype, size: req.file.size, data: req.file.buffer }
+  );
+  if (!result.affectedRows) return res.status(404).json({ error: "Applicant not found." });
+  res.json({
+    resumeFileName: req.file.originalname,
+    resumeFileType: req.file.mimetype,
+    resumeFileSize: req.file.size,
+  });
 }));
 
 // PATCH /api/applicants/:id/status — HR only (updateStatus() in
@@ -81,7 +176,7 @@ router.patch("/:id/status", requireAuth, requireRole("hr"), asyncHandler(async (
 // the applicant into the candidates shortlist. No-ops (matches
 // isAlreadyCandidate()) if already promoted.
 router.post("/:id/promote", requireAuth, requireRole("hr"), asyncHandler(async (req, res) => {
-  const [appRows] = await pool.query("SELECT * FROM applicants WHERE id = :id", { id: req.params.id });
+  const [appRows] = await pool.query(`SELECT ${APPLICANT_COLUMNS} FROM applicants WHERE id = :id`, { id: req.params.id });
   if (!appRows.length) return res.status(404).json({ error: "Applicant not found." });
   const a = appRows[0];
 
@@ -136,7 +231,10 @@ router.get("/cv-similarity", requireAuth, requireRole("hr"), asyncHandler(async 
 // (job-fit keyword similarity). Saves quality_score + quality_breakdown on
 // the applicant row and returns the result.
 router.post("/:id/quality-check", requireAuth, requireRole("hr"), asyncHandler(async (req, res) => {
-  const [appRows] = await pool.query("SELECT * FROM applicants WHERE id = :id", { id: req.params.id });
+  const [appRows] = await pool.query(
+    "SELECT id, job_id, resume_text FROM applicants WHERE id = :id",
+    { id: req.params.id }
+  );
   if (!appRows.length) return res.status(404).json({ error: "Applicant not found." });
   const applicant = appRows[0];
 

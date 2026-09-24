@@ -60,9 +60,10 @@ CREATE TABLE IF NOT EXISTS jobs (
 -- ---------------------------------------------------------------------
 -- applicants  (KEYS.applicants — raw pool from the public Apply form,
 -- includes the AI match score for HR's eyes only)
--- resume_file_id points at the browser's IndexedDB (hl_cv_files) record —
--- the CV file itself is NOT migrated into MySQL by this backend; see
--- README "What this backend does not do yet".
+-- resume_file_id is retained for backwards compatibility with applications
+-- created before server-side CV storage was added. New uploads store the
+-- actual binary in resume_file_data so every authorised staff browser can
+-- view/download the same file.
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS applicants (
   id                VARCHAR(40)  PRIMARY KEY,
@@ -75,6 +76,8 @@ CREATE TABLE IF NOT EXISTS applicants (
   resume_file_name  VARCHAR(255) NULL,
   resume_file_type  VARCHAR(120) NULL,
   resume_file_id    VARCHAR(64)  NULL,
+  resume_file_size  BIGINT UNSIGNED NULL,
+  resume_file_data  LONGBLOB     NULL,
   match_score       INT          NULL,
   matched_keywords  JSON         NULL,
   missing_keywords  JSON         NULL,
@@ -85,6 +88,12 @@ CREATE TABLE IF NOT EXISTS applicants (
   applied_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_applicants_job FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
+
+-- Upgrade existing Railway databases created by an older schema. These are
+-- idempotent on current MySQL versions, so npm run db:init remains safe to
+-- execute as a pre-deploy command.
+ALTER TABLE applicants ADD COLUMN IF NOT EXISTS resume_file_size BIGINT UNSIGNED NULL AFTER resume_file_id;
+ALTER TABLE applicants ADD COLUMN IF NOT EXISTS resume_file_data LONGBLOB NULL AFTER resume_file_size;
 
 -- ---------------------------------------------------------------------
 -- candidates  (KEYS.candidates -> "hl_candidates_shortlist": the smaller,
