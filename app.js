@@ -55,7 +55,7 @@ function ConfirmModal({ title, message, confirmLabel = "Delete", onConfirm, onCa
    purpose: it holds the signed-in user plus the JWT the backend issued
    at login, so a page refresh doesn't log you out — that's normal SPA
    session handling, not the old plaintext-password problem.
-   ====================================================================== */stem 
+   ====================================================================== */
 
 const KEYS = {
   session: "hl_session",
@@ -69,7 +69,7 @@ function roleLabel(role) { return ROLE_LABELS[role] || role; }
 // Points at the backend's /api root. Change this ONE line when deploying:
 // - Production backend hosted on Railway
 // - Deployed (e.g. Railway): https://<your-backend>.up.railway.app/api
-const API_BASE = "https://hiring-tracker-production-0941.up.railway.app/api";
+const API_BASE = "https://hiring-tracker-production-5b2b.up.railway.app/api";
 
 function authHeaders() {
   const s = getSession();
